@@ -25,7 +25,7 @@ Stable Diffusion (軽量版) を動かします。
 ## コンテナのビルド
 - PowerShellを起動
 - `wsl` を実行。WSLのUbuntuのシェルが起動する。
-- `cd <リポ ジトリをcloneしたフォルダ>` を実行。シェルのワーキングディレクトリが変わる。
+- `cd <リポジトリをcloneしたフォルダ>` を実行。シェルのワーキングディレクトリが変わる。
 - `./buildContainer.pl` を実行。stable-diffusionのリポジトリのcloneと、dockerイメージの作成が行われる。
 
 ## モデルデータのダウンロード
@@ -59,13 +59,13 @@ StableDiffusionの公式の説明をみて、チェックポイント(ckpt)フ�
 ## コンテナの起動
 - PowerShellを起動
 - `wsl` を実行。WSLのUbuntuのシェルが起動する。
-- `cd <リポ ジトリをcloneしたフォルダ>` を実行。シェルのワーキングディレクトリが変わる。
+- `cd <リポジトリをcloneしたフォルダ>` を実行。シェルのワーキングディレクトリが変わる。
 - `sudo service docker start` を実行。
 - `launchContainer.sh` を実行。dockerコンテナが開始される。
 - 説明：
 - `host/selectModel.pl host/models/sd-v1-???.ckpt` を実行。モデルデータのファイル名は実際に追加したものから一つを選ぶこと。
 - `python host/txt2imgEx.py --repeat 10 --prompt "great valley"` を実行。
-- 終わったらPCで`リポ ジトリをcloneしたフォルダ/outputs` を見ると画像とパラメータ情報のファイルができている。
+- 終わったらPCで`リポジトリをcloneしたフォルダ/outputs` を見ると画像とパラメータ情報のファイルができている。
 
 ## 説明
 - `launchContainer.sh` でコンテナを起動すると、`host`フォルダがコンテナ外側の、`リポ ジトリをcloneしたフォルダ`にマッピングされる。
