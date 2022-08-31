@@ -24,8 +24,7 @@ Stable Diffusion (軽量版) を動かします。
 - PowerShellを起動
 - `wsl` を実行。WSLのUbuntuのシェルが起動する。
 - `mkdir -p /mnt/c/sd-dockerfile`
-- `cd /mnt/c/sd-dockerfile`
-- `git clone git@github.com:tateisu/sd-dockerfile.git`
+- `git clone git@github.com:tateisu/sd-dockerfile.git /mnt/c/sd-dockerfile`
 
 ## モデルデータのダウンロード
 - StableDiffusionの公式の説明をみて、チェックポイント(ckpt)ファイルをいくつかダウンロードする。** とりあえず１個あれば動く。 **
@@ -35,7 +34,7 @@ Stable Diffusion (軽量版) を動かします。
 ## コンテナのビルド
 - PowerShellを起動
 - `wsl` を実行。WSLのUbuntuのシェルが起動する。
-- `cd <リポジトリをcloneしたフォルダ>` を実行。シェルのワーキングディレクトリが変わる。
+- `cd /mnt/c/sd-dockerfile` を実行。シェルのワーキングディレクトリが変わる。
 - `./buildContainer.pl` を実行。stable-diffusionのリポジトリのcloneと、dockerイメージの作成が行われる。
 
 
@@ -65,11 +64,10 @@ Stable Diffusion (軽量版) を動かします。
 ## コンテナの起動
 - PowerShellを起動
 - `wsl` を実行。WSLのUbuntuのシェルが起動する。
-- `cd <リポジトリをcloneしたフォルダ>` を実行。シェルのワーキングディレクトリが変わる。
+- `cd /mnt/c/sd-dockerfile` を実行。シェルのワーキングディレクトリが変わる。
 - `sudo service docker start` を実行。
 - `launchContainer.sh` を実行。dockerコンテナが開始される。
-- 説明：
-- `host/selectModel.pl host/models/sd-v1-???.ckpt` を実行。モデルデータのファイル名は実際に追加したものから一つを選ぶこと。
+- 起動したら最初に1回、 `host/selectModel.pl host/models/sd-v1-???.ckpt` を実行。モデルデータのファイル名は実際に追加したものから一つを選ぶこと。
 - `python host/txt2imgEx.py --repeat 10 --prompt "great valley"` を実行。
 - 終わったらエクスプローラーで `C:\sd-dockerfile\outputs` フォルダを確認すると、画像とパラメータ情報のファイルができている。
 
