@@ -20,7 +20,16 @@ Stable Diffusion (軽量版) を動かします。
 - https://qiita.com/YuukiMiyoshi/items/eec3c1827cd8356c1def とか
 
 ## このリポジトリのclone
-- (リポジトリを建ててから書く)
+- PowerShellを起動
+- `wsl` を実行。WSLのUbuntuのシェルが起動する。
+- `mkdir -p /mnt/c/sd-dockerfile`
+- `cd /mnt/c/sd-dockerfile`
+- `git clone git@github.com:tateisu/sd-dockerfile.git`
+
+## モデルデータのダウンロード
+StableDiffusionの公式の説明をみて、チェックポイント(ckpt)ファイルをいくつかダウンロードして
+エクスプローラーで`C:\sd-dockerfile\models` フォルダにコピーしておく。
+** とりあえず１個あれば動く。 **
 
 ## コンテナのビルド
 - PowerShellを起動
@@ -28,10 +37,6 @@ Stable Diffusion (軽量版) を動かします。
 - `cd <リポジトリをcloneしたフォルダ>` を実行。シェルのワーキングディレクトリが変わる。
 - `./buildContainer.pl` を実行。stable-diffusionのリポジトリのcloneと、dockerイメージの作成が行われる。
 
-## モデルデータのダウンロード
-StableDiffusionの公式の説明をみて、チェックポイント(ckpt)ファイルをいくつかダウンロードして
-`models/`フォルダの下に置いておく。
-** １個あれば動く。 **
 
 ```
 ├── README.md
@@ -68,6 +73,6 @@ StableDiffusionの公式の説明をみて、チェックポイント(ckpt)フ�
 - 終わったらPCで`リポジトリをcloneしたフォルダ/outputs` を見ると画像とパラメータ情報のファイルができている。
 
 ## 説明
-- `launchContainer.sh` でコンテナを起動すると、`host`フォルダがコンテナ外側の、`リポ ジトリをcloneしたフォルダ`にマッピングされる。
+- `launchContainer.sh` でコンテナを起動すると、`host`フォルダがコンテナ外側の、`リポジトリをcloneしたフォルダ`にマッピングされる。
 - `host/selectModel.pl` は指定したモデルデータのシンボリックリンクを所定の場所に作ったり、出力フォルダがなければ作ったりする。
 - `txt2imgEx.py` は繰り返し時にVRAMを一旦開放することで長時間回しても重くならないようにしている。また、生成時のパラメータを別ファイルに出力する。
