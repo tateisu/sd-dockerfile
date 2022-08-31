@@ -31,6 +31,7 @@ Stable Diffusion (軽量版) を動かします。
 ## モデルデータのダウンロード
 StableDiffusionの公式の説明をみて、チェックポイント(ckpt)ファイルをいくつかダウンロードして
 `models/`フォルダの下に置いておく。
+** １個あれば動く。 **
 
 ```
 ├── README.md
@@ -62,11 +63,11 @@ StableDiffusionの公式の説明をみて、チェックポイント(ckpt)フ�
 - `sudo service docker start` を実行。
 - `launchContainer.sh` を実行。dockerコンテナが開始される。
 - 説明：
-- `host/selectModel.pl host/models/sd-v1-4.ckpt` を実行。モデルデータは別のファイルでも良い。
+- `host/selectModel.pl host/models/sd-v1-???.ckpt` を実行。モデルデータのファイル名は実際に追加したものから一つを選ぶこと。
 - `python host/txt2imgEx.py --repeat 10 --prompt "great valley"` を実行。
 - 終わったらPCで`リポ ジトリをcloneしたフォルダ/outputs` を見ると画像とパラメータ情報のファイルができている。
 
 ## 説明
 - `launchContainer.sh` でコンテナを起動すると、`host`フォルダがコンテナ外側の、`リポ ジトリをcloneしたフォルダ`にマッピングされる。
 - `host/selectModel.pl` は指定したモデルデータのシンボリックリンクを所定の場所に作ったり、出力フォルダがなければ作ったりする。
-- `txt2imgEx.py` は繰り返し時にVRAMを一旦開放することで長時間回しても重くならないようにしている。
+- `txt2imgEx.py` は繰り返し時にVRAMを一旦開放することで長時間回しても重くならないようにしている。また、生成時のパラメータを別ファイルに出力する。
