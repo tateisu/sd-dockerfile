@@ -4,6 +4,7 @@ Windows 11のWSL2でnvidia-docker2でnvidia PyTorchベースのdockerコンテ�
 Stable Diffusion (軽量版) を動かします。
 
 - 現時点ではtxt2img しか動作確認してません。
+- Stable Diffusion (軽量版) https://github.com/basujindal/stable-diffusion ではセーフフィルタは既に無効化されていました。
 
 # 動作環境
 - Windows 11
@@ -27,9 +28,9 @@ Stable Diffusion (軽量版) を動かします。
 - `git clone git@github.com:tateisu/sd-dockerfile.git`
 
 ## モデルデータのダウンロード
-StableDiffusionの公式の説明をみて、チェックポイント(ckpt)ファイルをいくつかダウンロードして
-エクスプローラーで`C:\sd-dockerfile\models` フォルダにコピーしておく。
-** とりあえず１個あれば動く。 **
+- StableDiffusionの公式の説明をみて、チェックポイント(ckpt)ファイルをいくつかダウンロードする。** とりあえず１個あれば動く。 **
+- エクスプローラーで`C:\sd-dockerfile\models` フォルダにコピーしておく。
+
 
 ## コンテナのビルド
 - PowerShellを起動
@@ -70,7 +71,7 @@ StableDiffusionの公式の説明をみて、チェックポイント(ckpt)フ�
 - 説明：
 - `host/selectModel.pl host/models/sd-v1-???.ckpt` を実行。モデルデータのファイル名は実際に追加したものから一つを選ぶこと。
 - `python host/txt2imgEx.py --repeat 10 --prompt "great valley"` を実行。
-- 終わったらPCで`リポジトリをcloneしたフォルダ/outputs` を見ると画像とパラメータ情報のファイルができている。
+- 終わったらエクスプローラーで `C:\sd-dockerfile\outputs` フォルダを確認すると、画像とパラメータ情報のファイルができている。
 
 ## 説明
 - `launchContainer.sh` でコンテナを起動すると、`host`フォルダがコンテナ外側の、`リポジトリをcloneしたフォルダ`にマッピングされる。
