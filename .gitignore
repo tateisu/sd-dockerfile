@@ -1,0 +1,7 @@
+/models/*.ckpt
+/stable-diffusion-src
+/outputs
+/root-cache
+/docker-build-context/stable-diffusion-src.tgz
+
+__pycache__/
