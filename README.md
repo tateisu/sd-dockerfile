@@ -4,6 +4,7 @@ Windows 11のWSL2でnvidia-docker2でnvidia PyTorchベースのdockerコンテ�
 Stable Diffusion (軽量版) を動かします。
 
 - 現時点ではtxt2img しか動作確認してません。
+- Stable Diffusion (軽量版) https://github.com/basujindal/stable-diffusion ではセーフフィルタは既に無効化されていました。
 
 # 動作環境
 - Windows 11
@@ -20,17 +21,22 @@ Stable Diffusion (軽量版) を動かします。
 - https://qiita.com/YuukiMiyoshi/items/eec3c1827cd8356c1def とか
 
 ## このリポジトリのclone
-- (リポジトリを建ててから書く)
+- PowerShellを起動
+- `wsl` を実行。WSLのUbuntuのシェルが起動する。
+- `mkdir -p /mnt/c/sd-dockerfile`
+- `git clone git@github.com:tateisu/sd-dockerfile.git /mnt/c/sd-dockerfile`
+
+## モデルデータのダウンロード
+- StableDiffusionの公式の説明をみて、チェックポイント(ckpt)ファイルをいくつかダウンロードする。** とりあえず１個あれば動く。 **
+- エクスプローラーで`C:\sd-dockerfile\models` フォルダにコピーしておく。
+
 
 ## コンテナのビルド
 - PowerShellを起動
 - `wsl` を実行。WSLのUbuntuのシェルが起動する。
-- `cd <リポ ジトリをcloneしたフォルダ>` を実行。シェルのワーキングディレクトリが変わる。
+- `cd /mnt/c/sd-dockerfile` を実行。シェルのワーキングディレクトリが変わる。
 - `./buildContainer.pl` を実行。stable-diffusionのリポジトリのcloneと、dockerイメージの作成が行われる。
 
-## モデルデータのダウンロード
-StableDiffusionの公式の説明をみて、チェックポイント(ckpt)ファイルをいくつかダウンロードして
-`models/`フォルダの下に置いておく。
 
 ```
 ├── README.md
@@ -58,15 +64,14 @@ StableDiffusionの公式の説明をみて、チェックポイント(ckpt)フ�
 ## コンテナの起動
 - PowerShellを起動
 - `wsl` を実行。WSLのUbuntuのシェルが起動する。
-- `cd <リポ ジトリをcloneしたフォルダ>` を実行。シェルのワーキングディレクトリが変わる。
+- `cd /mnt/c/sd-dockerfile` を実行。シェルのワーキングディレクトリが変わる。
 - `sudo service docker start` を実行。
 - `launchContainer.sh` を実行。dockerコンテナが開始される。
-- 説明：
-- `host/selectModel.pl host/models/sd-v1-4.ckpt` を実行。モデルデータは別のファイルでも良い。
+- 起動したら最初に1回、 `host/selectModel.pl host/models/sd-v1-???.ckpt` を実行。モデルデータのファイル名は実際に追加したものから一つを選ぶこと。
 - `python host/txt2imgEx.py --repeat 10 --prompt "great valley"` を実行。
-- 終わったらPCで`リポ ジトリをcloneしたフォルダ/outputs` を見ると画像とパラメータ情報のファイルができている。
+- 終わったらエクスプローラーで `C:\sd-dockerfile\outputs` フォルダを確認すると、画像とパラメータ情報のファイルができている。
 
 ## 説明
-- `launchContainer.sh` でコンテナを起動すると、`host`フォルダがコンテナ外側の、`リポ ジトリをcloneしたフォルダ`にマッピングされる。
+- `launchContainer.sh` でコンテナを起動すると、`host`フォルダがコンテナ外側の、`リポジトリをcloneしたフォルダ`にマッピングされる。
 - `host/selectModel.pl` は指定したモデルデータのシンボリックリンクを所定の場所に作ったり、出力フォルダがなければ作ったりする。
-- `txt2imgEx.py` は繰り返し時にVRAMを一旦開放することで長時間回しても重くならないようにしている。
+- `txt2imgEx.py` は繰り返し時にVRAMを一旦開放することで長時間回しても重くならないようにしている。また、生成時のパラメータを別ファイルに出力する。
