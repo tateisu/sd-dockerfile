@@ -1,6 +1,6 @@
 modelUNet:
   base_learning_rate: 1.0e-04
-  target: optimizedSD.ddpm.UNet
+  target: host.ddpm.UNet
   params:
     linear_start: 0.00085
     linear_end: 0.0120
@@ -52,7 +52,7 @@ modelUNet:
         legacy: False
 
 modelFirstStage:
-  target: optimizedSD.ddpm.FirstStage
+  target: host.ddpm.FirstStage
   params:
     linear_start: 0.00085
     linear_end: 0.0120
@@ -92,7 +92,7 @@ modelFirstStage:
           target: torch.nn.Identity
 
 modelCondStage:
-  target: optimizedSD.ddpm.CondStage
+  target: host.ddpm.CondStage
   params:
     linear_start: 0.00085
     linear_end: 0.0120

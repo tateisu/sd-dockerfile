@@ -20,6 +20,7 @@ import datetime
 import json
 from collections import OrderedDict
 import codecs
+from pprint import pprint
 
 logging.set_verbosity_error()
 
@@ -37,7 +38,7 @@ def load_model_from_config(ckpt, verbose=False):
     sd = pl_sd["state_dict"]
     return sd
 
-config = "optimizedSD/v1-inference.yaml"
+config = "host/v1-inference.yaml"
 ckpt = "models/ldm/stable-diffusion-v1/model.ckpt"
 
 parser = argparse.ArgumentParser()
@@ -184,7 +185,7 @@ parser.add_argument(
 parser.add_argument(
     "--repeat",
     type=int,
-    help="if >1, repeat generation with random seed",
+    help="if >1, repeat image creation with random seed. if seed is fixed, this option has no effect.",
     default=1,
 )
 
@@ -258,6 +259,7 @@ if not opt.from_file:
     prompt = opt.prompt
     assert prompt is not None
     data = [batch_size * [prompt]]
+    pprint(data)
 
 else:
     print(f"reading prompts from {opt.from_file}")
@@ -289,6 +291,8 @@ with torch.no_grad():
                 prompts = list(prompts)
 
             subprompts, weights = split_weighted_subprompts(prompts[0])
+            pprint(weights)
+            pprint(subprompts)
             if len(subprompts) > 1:
                 c = torch.zeros_like(uc)
                 totalWeight = sum(weights)
@@ -307,7 +311,7 @@ with torch.no_grad():
             for repeat_remain in reversed(range(opt.repeat)):
 
                 print("================================")
-                print(f"repeatRemain={repeat_remain}")
+                print(f"repeat {opt.repeat-repeat_remain}/{opt.repeat}")
 
                 if opt.device != "cpu":
                     mem = torch.cuda.memory_allocated() / 1e6

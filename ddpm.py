@@ -293,13 +293,18 @@ class CondStage(DDPM):
 
     def get_learned_conditioning(self, c):
         if self.cond_stage_forward is None:
+            print("get_learned_conditioning: cond_stage_forward is None")
             if hasattr(self.cond_stage_model, 'encode') and callable(self.cond_stage_model.encode):
+                print("get_learned_conditioning: encode is callable")
                 c = self.cond_stage_model.encode(c)
                 if isinstance(c, DiagonalGaussianDistribution):
+                    print("get_learned_conditioning: c is DiagonalGaussianDistributionencode is callable")
                     c = c.mode()
             else:
+                print("get_learned_conditioning: cond_stage_model")
                 c = self.cond_stage_model(c)
         else:
+            print("get_learned_conditioning: cond_stage_forward !=None")
             assert hasattr(self.cond_stage_model, self.cond_stage_forward)
             c = getattr(self.cond_stage_model, self.cond_stage_forward)(c)
         return c
@@ -565,7 +570,6 @@ class UNet(DDPM):
 
         time_range = list(reversed(range(0,timesteps))) if ddim_use_original_steps else np.flip(timesteps)
         total_steps = timesteps if ddim_use_original_steps else timesteps.shape[0]
-        print(f"Running PLMS Sampling with {total_steps} timesteps")
 
         iterator = tqdm(time_range, desc='PLMS Sampler', total=total_steps)
         old_eps = []
@@ -706,7 +710,6 @@ class UNet(DDPM):
 
         time_range = np.flip(timesteps)
         total_steps = timesteps.shape[0]
-        print(f"Running DDIM Sampling with {total_steps} timesteps")
 
         iterator = tqdm(time_range, desc='Decoding image', total=total_steps)
         x_dec = x_latent
