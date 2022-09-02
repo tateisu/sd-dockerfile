@@ -1,9 +1,12 @@
+__pycache__/
 /models/*.ckpt
 /stable-diffusion-src
 /outputs
 /root-cache
-/docker-build-context/stable-diffusion-src.tgz
+/docker-build-context/*.tgz
+/real-esrgan-src
 
-__pycache__/
+realesrgan.zip
+realesrgan/
 
 run.pl
