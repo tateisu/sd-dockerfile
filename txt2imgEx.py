@@ -130,6 +130,8 @@ parser.add_argument(
     default=0,
     help="rows in the grid (default: n_samples)",
 )
+
+# プロンプト指定への忠実度
 parser.add_argument(
     "--scale",
     type=float,
@@ -188,7 +190,12 @@ parser.add_argument(
     help="if >1, repeat image creation with random seed. if seed is fixed, this option has no effect.",
     default=1,
 )
-
+parser.add_argument(
+    "--cooldown",
+    type=int,
+    help="if >0, sleep specified seconds before each image creation.",
+    default=0,
+)
 opt = parser.parse_args()
 
 tic = time.time()
@@ -321,6 +328,9 @@ with torch.no_grad():
                         print( "waiting cuda memory…alocated={0:.2f}".format(torch.cuda.memory_allocated() / 1e6) )
                         time.sleep(1)
 
+                if opt.cooldown > 0:
+                    time.sleep(opt.cooldown)
+
                 tic = time.time()
 
                 samples_ddim = model.sample(
@@ -362,7 +372,7 @@ with torch.no_grad():
                     info['half'] = is_half
                     info['seed'] = opt.seed
                     info['steps'] = opt.ddim_steps
-                    info['vscale'] = opt.scale
+                    info['scale'] = opt.scale
                     info['C'] = opt.C
                     info['ckpt'] = os.path.basename(os.readlink( ckpt ))
                     info_json = json.dumps(info, ensure_ascii=False)

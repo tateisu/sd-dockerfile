@@ -5,3 +5,5 @@
 /docker-build-context/stable-diffusion-src.tgz
 
 __pycache__/
+
+run.pl
