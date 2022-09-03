@@ -405,12 +405,11 @@ with torch.no_grad():
                 x_sample = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
                 x_sample = 255.0 * rearrange(x_sample[0].cpu().numpy(), "c h w -> h w c")
 
-                print(f"{time.time() - tic:.2f}s for samples_ddim.")
-                print(f"samples_ddim.shape={samples_ddim.shape}")
+                print(f"{time.time()-tic:.2f}s for samples_ddim. shape={samples_ddim.shape}")
 
                 time_str = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
                 basename = os.path.join(outpath, f"{time_str}_{opt.seed}")
-                
+
                 imageFile=f"{basename}.{opt.format}"
                 print(f"save to {imageFile}")
                 image = Image.fromarray(x_sample.astype(np.uint8))
