@@ -31,20 +31,14 @@ def formatBytes(B):
     """Return the given bytes as a human friendly KB, MB, GB, or TB string."""
     B = float(B)
     KB = float(1024)
-    MB = float(KB ** 2) # 1,048,576
-    GB = float(KB ** 3) # 1,073,741,824
-    TB = float(KB ** 4) # 1,099,511,627,776
-
-    if B < KB:
-        return f"{B} byte(s)"
-    elif KB <= B < MB:
-        return f"{B / KB:.2f}KB"
-    elif MB <= B < GB:
-        return f"{B / MB:.2f}MB"
-    elif GB <= B < TB:
-        return f"{B / GB:.2f}GB"
-    elif TB <= B:
-        return f"{B / TB:.2f}TB"
+    MB = float(KB ** 2)
+    GB = float(KB ** 3)
+    TB = float(KB ** 4)
+    if   B>=TB: return f"{B/TB:.1f}TB"
+    elif B>=GB: return f"{B/GB:.1f}GB"
+    elif B>=MB: return f"{B/MB:.1f}MB"
+    elif B>=KB: return f"{B/KB:.1f}KB"
+    else:       return f"{B} byte(s)"
 
 def free_vram(caption, block):
     before = torch.cuda.memory_allocated()
@@ -127,7 +121,7 @@ parser.add_argument(
 parser.add_argument(
     "--fixed_code",
     action="store_true",
-    help="if enabled, uses the same starting code across samples ",
+    help="if enabled, uses the same starting code across samples",
 )
 
 parser.add_argument(
@@ -227,14 +221,14 @@ parser.add_argument(
 parser.add_argument(
     "--sampler",
     type=str,
-    help="sampler. one of k_euler_a, k_dpm_2_a, lms(default)",
-    choices=["k_euler_a", "k_dpm_2_a", "lms"],
-    default="lms"
+    help="sampler. one of k_euler_a, k_dpm_2_a, k_lms(default)",
+    choices=["k_euler_a", "k_dpm_2_a", "k_lms"],
+    default="k_lms"
 )
 parser.add_argument(
     "--allow-long-token",
     action="store_true",
-    help="it true, does not check token length.",
+    help="it true, don't check token length.",
 )
 
 opt = parser.parse_args()
@@ -289,7 +283,7 @@ modelFS.eval()
 del sd
 
 ksamplers = {
-    'lms': K.sampling.sample_lms, 
+    'k_lms': K.sampling.sample_lms, 
     'k_euler_a': K.sampling.sample_euler_ancestral, 
     'k_dpm_2_a': K.sampling.sample_dpm_2_ancestral,
 }
@@ -319,11 +313,11 @@ if opt.precision == "autocast" :
 else:
     precision_scope = nullcontext
 
-print(f"{time.time() - tic:.2f}s for loading model.")
+print(f"{time.time()-tic:.2f}s for loading model.")
 
 tic = time.time()
 tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-print(f"{time.time() - tic:.2f}s for loading tokenizer for validation.")
+print(f"{time.time()-tic:.2f}s for loading tokenizer for validation.")
 
 with torch.no_grad():
     for prompts in data:
@@ -390,7 +384,7 @@ with torch.no_grad():
                     'cond_scale': opt.scale
                 }
 
-                samples_ddim = sampler(
+                samples = sampler(
                     CFGDenoiser(model_wrap),
                     x, 
                     sigmas, 
@@ -400,19 +394,18 @@ with torch.no_grad():
 
                 modelFS.to(device)
 
-
-                x_samples_ddim = modelFS.decode_first_stage(samples_ddim[0].unsqueeze(0))
+                x_samples_ddim = modelFS.decode_first_stage(samples[0].unsqueeze(0))
                 x_sample = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
                 x_sample = 255.0 * rearrange(x_sample[0].cpu().numpy(), "c h w -> h w c")
+                image = Image.fromarray(x_sample.astype(np.uint8))
 
-                print(f"{time.time()-tic:.2f}s for samples_ddim. shape={samples_ddim.shape}")
+                print(f"{time.time()-tic:.2f}s to compute samples. shape={samples.shape}")
+                del samples
 
                 time_str = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
                 basename = os.path.join(outpath, f"{time_str}_{opt.seed}")
-
                 imageFile=f"{basename}.{opt.format}"
                 print(f"save to {imageFile}")
-                image = Image.fromarray(x_sample.astype(np.uint8))
                 image.save(imageFile)
 
                 info = OrderedDict()
@@ -431,8 +424,6 @@ with torch.no_grad():
                 f = codecs.open(f"{basename}_info.txt", 'w', 'utf-8')
                 f.write(info_json)
                 f.close()
-
-                del samples_ddim
 
                 free_vram("modelFS", lambda: modelFS.to("cpu"))
                 free_vram("model_wrap", lambda: model_wrap.to("cpu"))
