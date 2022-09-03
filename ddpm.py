@@ -293,18 +293,13 @@ class CondStage(DDPM):
 
     def get_learned_conditioning(self, c):
         if self.cond_stage_forward is None:
-            print("get_learned_conditioning: cond_stage_forward is None")
             if hasattr(self.cond_stage_model, 'encode') and callable(self.cond_stage_model.encode):
-                print("get_learned_conditioning: encode is callable")
                 c = self.cond_stage_model.encode(c)
                 if isinstance(c, DiagonalGaussianDistribution):
-                    print("get_learned_conditioning: c is DiagonalGaussianDistributionencode is callable")
                     c = c.mode()
             else:
-                print("get_learned_conditioning: cond_stage_model")
                 c = self.cond_stage_model(c)
         else:
-            print("get_learned_conditioning: cond_stage_forward !=None")
             assert hasattr(self.cond_stage_model, self.cond_stage_forward)
             c = getattr(self.cond_stage_model, self.cond_stage_forward)(c)
         return c

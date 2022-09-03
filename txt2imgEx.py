@@ -1,4 +1,4 @@
-import argparse, os, re
+import argparse, os, re, sys
 import torch
 import numpy as np
 from random import randint
@@ -14,21 +14,49 @@ from torch import autocast
 from contextlib import contextmanager, nullcontext
 from ldm.util import instantiate_from_config
 from optimUtils import split_weighted_subprompts, logger
-from transformers import logging
+from transformers import logging, CLIPTokenizer
+
 import pandas as pd
 import datetime
 import json
 from collections import OrderedDict
 import codecs
 from pprint import pprint
+import torch.nn as nn
+import k_diffusion as K
 
 logging.set_verbosity_error()
 
+def formatBytes(B):
+    """Return the given bytes as a human friendly KB, MB, GB, or TB string."""
+    B = float(B)
+    KB = float(1024)
+    MB = float(KB ** 2) # 1,048,576
+    GB = float(KB ** 3) # 1,073,741,824
+    TB = float(KB ** 4) # 1,099,511,627,776
+
+    if B < KB:
+        return f"{B} byte(s)"
+    elif KB <= B < MB:
+        return f"{B / KB:.2f}KB"
+    elif MB <= B < GB:
+        return f"{B / MB:.2f}MB"
+    elif GB <= B < TB:
+        return f"{B / GB:.2f}GB"
+    elif TB <= B:
+        return f"{B / TB:.2f}TB"
+
+def free_vram(caption, block):
+    before = torch.cuda.memory_allocated()
+    print(f"CUDA allocated={formatBytes(before)}. freeing {caption}…")
+    block()
+    while before > 1_000_000_000 and torch.cuda.memory_allocated() >= before-1_000_000:
+        print( "CUDA allocated={formatBytes(torch.cuda.memory_allocated())}. waiting free…")
+        time.sleep(3)
 
 def chunk(it, size):
     it = iter(it)
     return iter(lambda: tuple(islice(it, size)), ())
-
 
 def load_model_from_config(ckpt, verbose=False):
     print(f"Loading model from {ckpt}")
@@ -37,6 +65,25 @@ def load_model_from_config(ckpt, verbose=False):
         print(f"Global Step: {pl_sd['global_step']}")
     sd = pl_sd["state_dict"]
     return sd
+
+class CFGDenoiser(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.inner_model = model
+
+    def forward(self, x, sigma, uncond, cond, cond_scale):
+        x_in = torch.cat([x] * 2)
+        sigma_in = torch.cat([sigma] * 2)
+        cond_in = torch.cat([uncond, cond])
+        uncond, cond = self.inner_model(x_in, sigma_in, cond=cond_in).chunk(2)
+        return uncond + (cond - uncond) * cond_scale
+
+def create_random_tensors(shape, seed, device):
+    xs = []
+    torch.manual_seed(seed)
+    xs.append(torch.randn(shape, device=device))
+    x = torch.stack(xs, 0)
+    return x
 
 config = "host/v1-inference.yaml"
 ckpt = "models/ldm/stable-diffusion-v1/model.ckpt"
@@ -75,14 +122,6 @@ parser.add_argument(
     type=int,
     default=50,
     help="number of ddim sampling steps",
-)
-
-# グリッド内の枚数。
-parser.add_argument(
-    "--n_samples",
-    type=int,
-    default=1,
-    help="how many samples to produce for each given prompt. A.k.a. batch size",
 )
 
 parser.add_argument(
@@ -124,12 +163,6 @@ parser.add_argument(
     default=8,
     help="downsampling factor",
 )
-parser.add_argument(
-    "--n_rows",
-    type=int,
-    default=0,
-    help="rows in the grid (default: n_samples)",
-)
 
 # プロンプト指定への忠実度
 parser.add_argument(
@@ -138,12 +171,7 @@ parser.add_argument(
     default=7.5,
     help="unconditional guidance scale: eps = eps(x, empty) + scale * (eps(x, cond) - eps(x, empty))",
 )
-parser.add_argument(
-    "--device",
-    type=str,
-    default="cuda",
-    help="specify GPU (cuda/cuda:0/cuda:1/...)",
-)
+
 parser.add_argument(
     "--from-file",
     type=str,
@@ -196,21 +224,32 @@ parser.add_argument(
     help="if >0, sleep specified seconds before each image creation.",
     default=0,
 )
+parser.add_argument(
+    "--sampler",
+    type=str,
+    help="sampler. one of k_euler_a, k_dpm_2_a, lms(default)",
+    choices=["k_euler_a", "k_dpm_2_a", "lms"],
+    default="lms"
+)
+parser.add_argument(
+    "--allow-long-token",
+    action="store_true",
+    help="it true, does not check token length.",
+)
+
 opt = parser.parse_args()
+
+device = "cuda"
 
 tic = time.time()
 outpath = opt.outdir
 os.makedirs(outpath, exist_ok=True)
-grid_count = len(os.listdir(outpath)) - 1
 
-fixed_seed = opt.seed != None
+is_fixed_seed = opt.seed != None
 
 if opt.seed == None:
     opt.seed = randint(1,2147483647)
 seed_everything(opt.seed)
-
-# Logging
-logger(vars(opt), log_csv = "logs/txt2img_logs.csv")
 
 sd = load_model_from_config(f"{ckpt}")
 li, lo = [], []
@@ -236,70 +275,78 @@ model = instantiate_from_config(config.modelUNet)
 _, _ = model.load_state_dict(sd, strict=False)
 model.eval()
 model.unet_bs = opt.unet_bs
-model.cdevice = opt.device
+model.cdevice = device
 model.turbo = opt.turbo
 
 modelCS = instantiate_from_config(config.modelCondStage)
 _, _ = modelCS.load_state_dict(sd, strict=False)
 modelCS.eval()
-modelCS.cond_stage_model.device = opt.device
+modelCS.cond_stage_model.device = device
 
 modelFS = instantiate_from_config(config.modelFirstStage)
 _, _ = modelFS.load_state_dict(sd, strict=False)
 modelFS.eval()
 del sd
 
+ksamplers = {
+    'lms': K.sampling.sample_lms, 
+    'k_euler_a': K.sampling.sample_euler_ancestral, 
+    'k_dpm_2_a': K.sampling.sample_dpm_2_ancestral,
+}
+
+model_wrap = K.external.CompVisDenoiser(model)
+sampler = ksamplers[opt.sampler]
+
 is_half = False
-if opt.device != "cpu" and opt.precision == "autocast":
+if opt.precision == "autocast":
     is_half = True
     model.half()
     modelCS.half()
 
-start_code = None
-if opt.fixed_code:
-    start_code = torch.randn([opt.n_samples, opt.C, opt.H // opt.f, opt.W // opt.f], device=opt.device)
-
-
-batch_size = opt.n_samples
-n_rows = opt.n_rows if opt.n_rows > 0 else batch_size
 if not opt.from_file:
     prompt = opt.prompt
     assert prompt is not None
-    data = [batch_size * [prompt]]
-    pprint(data)
-
+    data = [1 * [prompt]]
 else:
     print(f"reading prompts from {opt.from_file}")
     with open(opt.from_file, "r") as f:
         data = f.read().splitlines()
-        data = batch_size * list(data)
-        data = list(chunk(sorted(data), batch_size))
+        data = 1 * list(data)
+        data = list(chunk(sorted(data), 1))
 
-
-if opt.precision == "autocast" and opt.device != "cpu":
+if opt.precision == "autocast" :
     precision_scope = autocast
 else:
     precision_scope = nullcontext
 
-print( "{0:.2f} seconds for loading.".format(time.time() - tic) )
+print(f"{time.time() - tic:.2f}s for loading model.")
+
+tic = time.time()
+tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+print(f"{time.time() - tic:.2f}s for loading tokenizer for validation.")
 
 with torch.no_grad():
-
-    for prompts in tqdm(data, desc="data"):
+    for prompts in data:
 
         tic = time.time()
 
         with precision_scope("cuda"):
-            modelCS.to(opt.device)
+            modelCS.to(device)
             uc = None
             if opt.scale != 1.0:
-                uc = modelCS.get_learned_conditioning(batch_size * [""])
+                uc = modelCS.get_learned_conditioning(1 * [""])
             if isinstance(prompts, tuple):
                 prompts = list(prompts)
 
             subprompts, weights = split_weighted_subprompts(prompts[0])
-            pprint(weights)
-            pprint(subprompts)
+            
+            for i,prompt in enumerate(subprompts):
+                tokens = tokenizer.tokenize(prompt)
+                print(f"prompt[{i}]: {len(tokens)}/{tokenizer.model_max_length} tokens. weight={weights[i]}, prompt={prompt}")
+                if not opt.allow_long_token and len(tokens) > tokenizer.model_max_length :
+                    print(f"prompt[{i}]: Too long tokens.")
+                    sys.exit(1)
+
             if len(subprompts) > 1:
                 c = torch.zeros_like(uc)
                 totalWeight = sum(weights)
@@ -314,92 +361,89 @@ with torch.no_grad():
 
             shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
 
-            print( "{0:.2f} seconds for modelCS.".format(time.time() - tic) )
+            free_vram("modelCS", lambda: modelCS.to("cpu"))
+
+            print(f"{time.time() - tic:.2f}s for prompt conversion.")
+
             for repeat_remain in reversed(range(opt.repeat)):
 
                 print("================================")
                 print(f"repeat {opt.repeat-repeat_remain}/{opt.repeat}")
-
-                if opt.device != "cpu":
-                    mem = torch.cuda.memory_allocated() / 1e6
-                    print(f"modelCS.to(cpu) cuda_allocated={mem}")
-                    modelCS.to("cpu")
-                    while mem > 1000 and torch.cuda.memory_allocated() / 1e6 >= mem:
-                        print( "waiting cuda memory…alocated={0:.2f}".format(torch.cuda.memory_allocated() / 1e6) )
-                        time.sleep(1)
 
                 if opt.cooldown > 0:
                     time.sleep(opt.cooldown)
 
                 tic = time.time()
 
-                samples_ddim = model.sample(
-                    S=opt.ddim_steps,
-                    conditioning=c,
-                    batch_size=opt.n_samples,
-                    seed=opt.seed,
-                    shape=shape,
-                    verbose=False,
-                    unconditional_guidance_scale=opt.scale,
-                    unconditional_conditioning=uc,
-                    eta=opt.ddim_eta,
-                    x_T=start_code,
+                model_wrap.to(device)
+
+                sigmas = model_wrap.get_sigmas(opt.ddim_steps)
+                x = create_random_tensors(
+                    shape, 
+                    opt.seed, 
+                    device=device,
+                ) * sigmas[0]
+
+                extra_args = {
+                    'cond': c, 
+                    'uncond': uc, 
+                    'cond_scale': opt.scale
+                }
+
+                samples_ddim = sampler(
+                    CFGDenoiser(model_wrap),
+                    x, 
+                    sigmas, 
+                    extra_args=extra_args, 
+                    disable=False
                 )
 
-                modelFS.to(opt.device)
+                modelFS.to(device)
 
-                print(samples_ddim.shape)
-                print("saving images")
 
-                seeds = ""
+                x_samples_ddim = modelFS.decode_first_stage(samples_ddim[0].unsqueeze(0))
+                x_sample = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+                x_sample = 255.0 * rearrange(x_sample[0].cpu().numpy(), "c h w -> h w c")
 
-                for i in range(batch_size):
+                print(f"{time.time() - tic:.2f}s for samples_ddim.")
+                print(f"samples_ddim.shape={samples_ddim.shape}")
 
-                    x_samples_ddim = modelFS.decode_first_stage(samples_ddim[i].unsqueeze(0))
-                    x_sample = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
-                    x_sample = 255.0 * rearrange(x_sample[0].cpu().numpy(), "c h w -> h w c")
-                    time_str = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-                    basename = os.path.join(outpath, f"{time_str}_{opt.seed}")
+                time_str = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+                basename = os.path.join(outpath, f"{time_str}_{opt.seed}")
+                
+                imageFile=f"{basename}.{opt.format}"
+                print(f"save to {imageFile}")
+                image = Image.fromarray(x_sample.astype(np.uint8))
+                image.save(imageFile)
 
-                    image = Image.fromarray(x_sample.astype(np.uint8))
-                    image.save(f"{basename}.{opt.format}")
-
-                    info = OrderedDict()
-                    info['text'] = opt.prompt
-                    info['folder'] = outpath
-                    info['resX'] = image.width
-                    info['resY'] = image.height
-                    info['half'] = is_half
-                    info['seed'] = opt.seed
-                    info['steps'] = opt.ddim_steps
-                    info['scale'] = opt.scale
-                    info['C'] = opt.C
-                    info['ckpt'] = os.path.basename(os.readlink( ckpt ))
-                    info_json = json.dumps(info, ensure_ascii=False)
-                    f = codecs.open(f"{basename}_info.txt", 'w', 'utf-8')
-                    f.write(info_json)
-                    f.close()
-
-                    seeds += str(opt.seed) + ","
-                    opt.seed += 1
-
-                print("image saved. seeds=" + seeds[:-1])
-                print( "{0:.2f} seconds for samples_ddim.".format(time.time() - tic) )
+                info = OrderedDict()
+                info['text'] = opt.prompt
+                info['folder'] = outpath
+                info['resX'] = image.width
+                info['resY'] = image.height
+                info['half'] = is_half
+                info['seed'] = opt.seed
+                info['steps'] = opt.ddim_steps
+                info['scale'] = opt.scale
+                info['C'] = opt.C
+                info['ckpt'] = os.path.basename(os.readlink( ckpt ))
+                info['sampler'] = opt.sampler
+                info_json = json.dumps(info, ensure_ascii=False)
+                f = codecs.open(f"{basename}_info.txt", 'w', 'utf-8')
+                f.write(info_json)
+                f.close()
 
                 del samples_ddim
 
-                if opt.device != "cpu":
-                    mem = torch.cuda.memory_allocated() / 1e6
-                    print(f"modelFS.to(cpu) cuda_allocated={mem}")
-                    modelFS.to("cpu")
-                    while mem > 1000 and torch.cuda.memory_allocated() / 1e6 >= mem:
-                        print( f"waiting cuda memory…alocated={0:.2f}".format(torch.cuda.memory_allocated() / 1e6) )
-                        time.sleep(1)
+                free_vram("modelFS", lambda: modelFS.to("cpu"))
+                free_vram("model_wrap", lambda: model_wrap.to("cpu"))
+                # 不要ぽい free_vram("modelCS", lambda: modelCS.to("cpu"))
 
-                print("cuda_allocated=", torch.cuda.memory_allocated() / 1e6)
-                
-                if fixed_seed and repeat_remain>0:
-                    print( "repeat is ignored for fixed_seed")
+                # リーク検出のため、1バイト単位で表示する
+                print(f"CUDA allocated={torch.cuda.memory_allocated():,} bytes")
+
+                if is_fixed_seed and repeat_remain>0:
+                    print( "repeat is ignored for fixed seed.")
                     break
 
                 opt.seed = randint(1,2147483647)

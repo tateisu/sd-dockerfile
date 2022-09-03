@@ -22,3 +22,6 @@ kornia==0.6
 -e git+https://github.com/CompVis/taming-transformers.git@master#egg=taming-transformers
 -e git+https://github.com/openai/CLIP.git@main#egg=clip
 -e .
+
+# samplerを選択可能にする
+-e git+https://github.com/hlky/k-diffusion-sd#egg=k_diffusion

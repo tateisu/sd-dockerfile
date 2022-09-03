@@ -1,7 +1,6 @@
 import os
 import pandas as pd
 
-
 def split_weighted_subprompts(text):
     """
     grabs all text up to the first occurrence of ':' 
