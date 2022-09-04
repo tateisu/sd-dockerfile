@@ -233,16 +233,50 @@ parser.add_argument(
 
 opt = parser.parse_args()
 
-device = "cuda"
+##############################
+# read and check prompt
+
+if opt.from_file:
+    print(f"reading prompts from {opt.from_file}")
+    with open(opt.from_file, "r") as f:
+        promptText = f.read()
+else:
+    promptText = opt.prompt
 
 tic = time.time()
+tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+print(f"{time.time()-tic:.2f}s for loading tokenizer for validation.")
+
+max_tokens = tokenizer.model_max_length
+# 上限は77だが、ギリギリに置いた単語の効果は出ないっぽい。
+# https://note.com/hugiri/n/n970f9deb55b2
+
+promptText = re.sub('[\x00-\x20]+', ' ', promptText)
+subprompts, weights = split_weighted_subprompts(promptText)
+for i,prompt in enumerate(subprompts):
+    tokens = tokenizer.tokenize(prompt)
+    print(f"prompt[{i}]: {len(tokens)}/{max_tokens} tokens. weight={weights[i]}, prompt={prompt}")
+    if not opt.allow_long_token and len(tokens) > max_tokens :
+        print(f"prompt[{i}]: Too long tokens.")
+        sys.exit(1)
+
+##############################
+# create output dir
+
 outpath = opt.outdir
 os.makedirs(outpath, exist_ok=True)
 
-is_fixed_seed = opt.seed != None
+##############################
+# load model
 
+tic = time.time()
+
+device = "cuda"
+
+is_fixed_seed = opt.seed != None
 if opt.seed == None:
     opt.seed = randint(1,2147483647)
+
 seed_everything(opt.seed)
 
 sd = load_model_from_config(f"{ckpt}")
@@ -297,17 +331,6 @@ if opt.precision == "autocast":
     model.half()
     modelCS.half()
 
-if not opt.from_file:
-    prompt = opt.prompt
-    assert prompt is not None
-    data = [1 * [prompt]]
-else:
-    print(f"reading prompts from {opt.from_file}")
-    with open(opt.from_file, "r") as f:
-        data = f.read().splitlines()
-        data = 1 * list(data)
-        data = list(chunk(sorted(data), 1))
-
 if opt.precision == "autocast" :
     precision_scope = autocast
 else:
@@ -315,129 +338,107 @@ else:
 
 print(f"{time.time()-tic:.2f}s for loading model.")
 
-tic = time.time()
-tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-print(f"{time.time()-tic:.2f}s for loading tokenizer for validation.")
-
-max_tokens = tokenizer.model_max_length
-# 上限は77だが、ギリギリに置いた単語の効果は出ないっぽい。
-# https://note.com/hugiri/n/n970f9deb55b2
-
 with torch.no_grad():
-    for prompts in data:
+    with precision_scope("cuda"):
+        modelCS.to(device)
 
         tic = time.time()
 
-        with precision_scope("cuda"):
-            modelCS.to(device)
-            uc = None
-            if opt.scale != 1.0:
-                uc = modelCS.get_learned_conditioning(1 * [""])
-            if isinstance(prompts, tuple):
-                prompts = list(prompts)
+        uc = None
+        if opt.scale != 1.0:
+            uc = modelCS.get_learned_conditioning([""])
 
-            subprompts, weights = split_weighted_subprompts(prompts[0])
-            
-            for i,prompt in enumerate(subprompts):
-                tokens = tokenizer.tokenize(prompt)
-                print(f"prompt[{i}]: {len(tokens)}/{max_tokens} tokens. weight={weights[i]}, prompt={prompt}")
-                if not opt.allow_long_token and len(tokens) > max_tokens :
-                    print(f"prompt[{i}]: Too long tokens.")
-                    sys.exit(1)
+        # normalize each "sub prompt" and add it
+        c = torch.zeros_like(uc)
+        totalWeight = sum(weights)
+        for i in range(len(subprompts)):
+            weight = weights[i]
+            # if not skip_normalize:
+            weight = weight / totalWeight
+            c = torch.add(c, modelCS.get_learned_conditioning(subprompts[i]), alpha=weight)
 
-            if len(subprompts) > 1:
-                c = torch.zeros_like(uc)
-                totalWeight = sum(weights)
-                # normalize each "sub prompt" and add it
-                for i in range(len(subprompts)):
-                    weight = weights[i]
-                    # if not skip_normalize:
-                    weight = weight / totalWeight
-                    c = torch.add(c, modelCS.get_learned_conditioning(subprompts[i]), alpha=weight)
-            else:
-                c = modelCS.get_learned_conditioning(prompts)
+        shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
 
-            shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
 
-            free_vram("modelCS", lambda: modelCS.to("cpu"))
+        print(f"{time.time() - tic:.2f}s for prompt conversion.")
 
-            print(f"{time.time() - tic:.2f}s for prompt conversion.")
+        free_vram("modelCS", lambda: modelCS.to("cpu"))
 
-            for repeat_remain in reversed(range(opt.repeat)):
+        for repeat_remain in reversed(range(opt.repeat)):
 
-                print("================================")
-                print(f"repeat {opt.repeat-repeat_remain}/{opt.repeat}")
+            print("================================")
+            print(f"repeat {opt.repeat-repeat_remain}/{opt.repeat}")
 
-                if opt.cooldown > 0:
-                    time.sleep(opt.cooldown)
+            if opt.cooldown > 0:
+                time.sleep(opt.cooldown)
 
-                tic = time.time()
+            tic = time.time()
 
-                model_wrap.to(device)
+            model_wrap.to(device)
 
-                sigmas = model_wrap.get_sigmas(opt.ddim_steps)
-                x = create_random_tensors(
-                    shape, 
-                    opt.seed, 
-                    device=device,
-                ) * sigmas[0]
+            sigmas = model_wrap.get_sigmas(opt.ddim_steps)
+            x = create_random_tensors(
+                shape, 
+                opt.seed, 
+                device=device,
+            ) * sigmas[0]
 
-                extra_args = {
-                    'cond': c, 
-                    'uncond': uc, 
-                    'cond_scale': opt.scale
-                }
+            extra_args = {
+                'cond': c, 
+                'uncond': uc, 
+                'cond_scale': opt.scale
+            }
 
-                samples = sampler(
-                    CFGDenoiser(model_wrap),
-                    x, 
-                    sigmas, 
-                    extra_args=extra_args, 
-                    disable=False
-                )
+            samples = sampler(
+                CFGDenoiser(model_wrap),
+                x, 
+                sigmas, 
+                extra_args=extra_args, 
+                disable=False
+            )
 
-                modelFS.to(device)
+            modelFS.to(device)
 
-                x_samples_ddim = modelFS.decode_first_stage(samples[0].unsqueeze(0))
-                x_sample = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
-                x_sample = 255.0 * rearrange(x_sample[0].cpu().numpy(), "c h w -> h w c")
-                image = Image.fromarray(x_sample.astype(np.uint8))
+            x_samples_ddim = modelFS.decode_first_stage(samples[0].unsqueeze(0))
+            x_sample = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+            x_sample = 255.0 * rearrange(x_sample[0].cpu().numpy(), "c h w -> h w c")
+            image = Image.fromarray(x_sample.astype(np.uint8))
 
-                print(f"{time.time()-tic:.2f}s to compute samples. shape={samples.shape}")
-                del samples
+            print(f"{time.time()-tic:.2f}s to compute samples. shape={samples.shape}")
+            del samples
 
-                time_str = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-                basename = os.path.join(outpath, f"{time_str}_{opt.seed}")
-                imageFile=f"{basename}.{opt.format}"
-                print(f"save to {imageFile}")
-                image.save(imageFile)
+            time_str = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+            basename = os.path.join(outpath, f"{time_str}_{opt.seed}")
+            imageFile=f"{basename}.{opt.format}"
+            print(f"save to {imageFile}")
+            image.save(imageFile)
 
-                info = OrderedDict()
-                info['text'] = opt.prompt
-                info['folder'] = outpath
-                info['resX'] = image.width
-                info['resY'] = image.height
-                info['half'] = is_half
-                info['seed'] = opt.seed
-                info['steps'] = opt.ddim_steps
-                info['scale'] = opt.scale
-                info['C'] = opt.C
-                info['ckpt'] = os.path.basename(os.readlink( ckpt ))
-                info['sampler'] = opt.sampler
-                info_json = json.dumps(info, ensure_ascii=False)
-                f = codecs.open(f"{basename}_info.txt", 'w', 'utf-8')
-                f.write(info_json)
-                f.close()
+            info = OrderedDict()
+            info['text'] = opt.prompt
+            info['folder'] = outpath
+            info['resX'] = image.width
+            info['resY'] = image.height
+            info['half'] = is_half
+            info['seed'] = opt.seed
+            info['steps'] = opt.ddim_steps
+            info['scale'] = opt.scale
+            info['C'] = opt.C
+            info['ckpt'] = os.path.basename(os.readlink( ckpt ))
+            info['sampler'] = opt.sampler
+            info_json = json.dumps(info, ensure_ascii=False)
+            f = codecs.open(f"{basename}_info.txt", 'w', 'utf-8')
+            f.write(info_json)
+            f.close()
 
-                free_vram("modelFS", lambda: modelFS.to("cpu"))
-                free_vram("model_wrap", lambda: model_wrap.to("cpu"))
-                # 不要ぽい free_vram("modelCS", lambda: modelCS.to("cpu"))
+            free_vram("modelFS", lambda: modelFS.to("cpu"))
+            free_vram("model_wrap", lambda: model_wrap.to("cpu"))
+            # 不要ぽい free_vram("modelCS", lambda: modelCS.to("cpu"))
 
-                # リーク検出のため、1バイト単位で表示する
-                print(f"CUDA allocated={torch.cuda.memory_allocated():,} bytes")
+            # リーク検出のため、1バイト単位で表示する
+            print(f"CUDA allocated={torch.cuda.memory_allocated():,} bytes")
 
-                if is_fixed_seed and repeat_remain>0:
-                    print( "repeat is ignored for fixed seed.")
-                    break
+            if is_fixed_seed and repeat_remain>0:
+                print( "repeat is ignored for fixed seed.")
+                break
 
-                opt.seed = randint(1,2147483647)
+            opt.seed = randint(1,2147483647)
