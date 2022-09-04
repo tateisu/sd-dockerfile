@@ -319,6 +319,10 @@ tic = time.time()
 tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
 print(f"{time.time()-tic:.2f}s for loading tokenizer for validation.")
 
+max_tokens = tokenizer.model_max_length
+# 上限は77だが、ギリギリに置いた単語の効果は出ないっぽい。
+# https://note.com/hugiri/n/n970f9deb55b2
+
 with torch.no_grad():
     for prompts in data:
 
@@ -336,8 +340,8 @@ with torch.no_grad():
             
             for i,prompt in enumerate(subprompts):
                 tokens = tokenizer.tokenize(prompt)
-                print(f"prompt[{i}]: {len(tokens)}/{tokenizer.model_max_length} tokens. weight={weights[i]}, prompt={prompt}")
-                if not opt.allow_long_token and len(tokens) > tokenizer.model_max_length :
+                print(f"prompt[{i}]: {len(tokens)}/{max_tokens} tokens. weight={weights[i]}, prompt={prompt}")
+                if not opt.allow_long_token and len(tokens) > max_tokens :
                     print(f"prompt[{i}]: Too long tokens.")
                     sys.exit(1)
 
