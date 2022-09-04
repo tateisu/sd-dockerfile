@@ -42,10 +42,9 @@ def formatBytes(B):
 
 def free_vram(caption, block):
     before = torch.cuda.memory_allocated()
-    print(f"CUDA allocated={formatBytes(before)}. freeing {caption}…")
     block()
     while before > 1_000_000_000 and torch.cuda.memory_allocated() >= before-1_000_000:
-        print( "CUDA allocated={formatBytes(torch.cuda.memory_allocated())}. waiting free…")
+        print( "CUDA allocated={formatBytes(before)} → {formatBytes(torch.cuda.memory_allocated())}. waiting free {caption}…")
         time.sleep(3)
 
 def chunk(it, size):
