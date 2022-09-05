@@ -20,7 +20,7 @@ sub cmd($){
 }
 
 ##VRAMたりない my $sd_repo = "https://github.com/CompVis/stable-diffusion";
-my $sd_repo = "https://github.com/basujindal/stable-diffusion";
+my $sd_repo = "https://github.com/tateisu/stable-diffusion";
 
 my $build_context_dir = "docker-build-context";
 
