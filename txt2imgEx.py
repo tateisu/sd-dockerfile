@@ -111,7 +111,7 @@ parser.add_argument(
 
 # GRisk GUI のStepsに相当する？
 parser.add_argument(
-    "--ddim_steps",
+    "--steps",
     type=int,
     default=50,
     help="number of ddim sampling steps",
@@ -217,6 +217,12 @@ parser.add_argument(
     help="if >0, sleep specified seconds before each image creation.",
     default=0,
 )
+
+ksamplers = {
+    'k_lms': K.sampling.sample_lms, 
+    'k_euler_a': K.sampling.sample_euler_ancestral, 
+    'k_dpm_2_a': K.sampling.sample_dpm_2_ancestral,
+}
 parser.add_argument(
     "--sampler",
     type=str,
@@ -288,11 +294,6 @@ _, _ = modelFS.load_state_dict(sd, strict=False)
 modelFS.eval()
 del sd
 
-ksamplers = {
-    'k_lms': K.sampling.sample_lms, 
-    'k_euler_a': K.sampling.sample_euler_ancestral, 
-    'k_dpm_2_a': K.sampling.sample_dpm_2_ancestral,
-}
 
 model_wrap = K.external.CompVisDenoiser(model)
 sampler = ksamplers[opt.sampler]
@@ -311,6 +312,9 @@ else:
 print(f"{time.time()-tic:.2f}s for loading model.")
 
 tic = time.time()
+
+#######################################
+# prompt token check
 
 if opt.from_file:
     print(f"reading prompts from {opt.from_file}")
@@ -336,10 +340,13 @@ max_tokens = tokenizer.model_max_length
 subprompts, weights = split_weighted_subprompts(promptText)
 for i,prompt in enumerate(subprompts):
     tokens = tokenizer.tokenize(prompt)
-    print(f"prompt[{i}]: {len(tokens)}/{max_tokens} tokens. weight={weights[i]}, prompt={prompt}")
+    tokenString = "⫶".join(map(lambda it:re.sub("</w>","",it),tokens))
+    print(f"prompt[{i}]: {len(tokens)}/{max_tokens} tokens. weight={weights[i]}, prompt={tokenString}")
     if not opt.allow_long_token and len(tokens) > max_tokens :
         print(f"prompt[{i}]: Too long tokens.")
         sys.exit(1)
+
+######################################
 
 with torch.no_grad():
     with precision_scope("cuda"):
@@ -379,7 +386,7 @@ with torch.no_grad():
 
             model_wrap.to(device)
 
-            sigmas = model_wrap.get_sigmas(opt.ddim_steps)
+            sigmas = model_wrap.get_sigmas(opt.steps)
             x = create_random_tensors(
                 shape, 
                 opt.seed, 
@@ -418,12 +425,11 @@ with torch.no_grad():
 
             info = OrderedDict()
             info['text'] = opt.prompt
-            info['folder'] = outpath
-            info['resX'] = image.width
-            info['resY'] = image.height
-            info['half'] = is_half
+            info['width'] = image.width
+            info['height'] = image.height
+            info['precision'] = opt.precision
             info['seed'] = opt.seed
-            info['steps'] = opt.ddim_steps
+            info['steps'] = opt.steps
             info['scale'] = opt.scale
             info['C'] = opt.C
             info['ckpt'] = os.path.basename(os.readlink( ckpt ))
