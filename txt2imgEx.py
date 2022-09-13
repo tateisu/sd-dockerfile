@@ -109,14 +109,6 @@ parser.add_argument(
     help="do not save individual samples. For speed measurements.",
 )
 
-# GRisk GUI のStepsに相当する？
-parser.add_argument(
-    "--steps",
-    type=int,
-    default=50,
-    help="number of ddim sampling steps",
-)
-
 parser.add_argument(
     "--fixed_code",
     action="store_true",
@@ -157,12 +149,20 @@ parser.add_argument(
     help="downsampling factor",
 )
 
-# プロンプト指定への忠実度
+# Guidance scale, プロンプト指定への忠実度
 parser.add_argument(
     "--scale",
-    type=float,
-    default=7.5,
-    help="unconditional guidance scale: eps = eps(x, empty) + scale * (eps(x, cond) - eps(x, empty))",
+    type=str,
+    default="7.5",
+    help="comma separated, unconditional guidance scale: eps = eps(x, empty) + scale * (eps(x, cond) - eps(x, empty))",
+)
+
+# 
+parser.add_argument(
+    "--steps",
+    type=str,
+    default="50",
+    help="comma separated, number of ddim sampling steps",
 )
 
 parser.add_argument(
@@ -217,6 +217,35 @@ parser.add_argument(
     help="if >0, sleep specified seconds before each image creation.",
     default=0,
 )
+parser.add_argument(
+    "--allow-long-token",
+    action="store_true",
+    help="it true, don't check token length.",
+)
+parser.add_argument(
+   "--comment",
+    type=str,
+    help="comment is added to json.",
+    default="",
+)
+parser.add_argument(
+    "--tile",
+    action="store_true",
+    help="make image for tile.",
+    default=False
+)
+parser.add_argument(
+    "--negative-prompt",
+    type=str,
+    help="negative prompt",
+    default=""
+)
+parser.add_argument(
+    "--negative-prompt-alpha",
+    type=str,
+    default="1",
+    help="comma separated, alpha(0..1) of negative prompt.",
+)
 
 ksamplers = {
     'k_lms': K.sampling.sample_lms, 
@@ -230,29 +259,51 @@ parser.add_argument(
     choices=["k_euler_a", "k_dpm_2_a", "k_lms"],
     default="k_lms"
 )
-parser.add_argument(
-    "--allow-long-token",
-    action="store_true",
-    help="it true, don't check token length.",
-)
+
+device = "cuda"
 
 opt = parser.parse_args()
 
-##############################
-# create output dir
+def splitCSV(a,typeConverter):
+    return list(
+        map(
+            typeConverter,
+            filter(
+                lambda x: len(x)>0,
+                map(
+                    lambda x: x.strip(),
+                    a.split(","),
+                ),
+            ),
+        )
+    )
 
-outpath = opt.outdir
-os.makedirs(outpath, exist_ok=True)
+# multiple scales, steps
+scales = splitCSV(opt.scale, lambda x: float(x))
+steps_list = splitCSV(opt.steps, lambda x: int(x))
+negative_prompt_alphas = splitCSV(opt.negative_prompt_alpha, lambda x: float(x))
+
+is_fixed_seed = (opt.seed is not None)
+if opt.repeat>1 and is_fixed_seed:
+    print( "repeat is ignored for fixed seed")
+    opt.repeat = 1
 
 ##############################
 # load model
 
 tic = time.time()
 
-device = "cuda"
+def patch_conv(cls):
+    init = cls.__init__
+    def __init__(self, *args, **kwargs):
+        return init(self, *args, **kwargs, padding_mode='circular')
+    cls.__init__ = __init__
 
-is_fixed_seed = opt.seed != None
-if opt.seed == None:
+if opt.tile:
+    patch_conv(torch.nn.Conv2d)
+
+# initialize seed if not specified
+if not is_fixed_seed:
     opt.seed = randint(1,2147483647)
 
 seed_everything(opt.seed)
@@ -289,30 +340,6 @@ _, _ = modelCS.load_state_dict(sd, strict=False)
 modelCS.eval()
 modelCS.cond_stage_model.device = device
 
-modelFS = instantiate_from_config(config.modelFirstStage)
-_, _ = modelFS.load_state_dict(sd, strict=False)
-modelFS.eval()
-del sd
-
-
-model_wrap = K.external.CompVisDenoiser(model)
-sampler = ksamplers[opt.sampler]
-
-is_half = False
-if opt.precision == "autocast":
-    is_half = True
-    model.half()
-    modelCS.half()
-
-if opt.precision == "autocast" :
-    precision_scope = autocast
-else:
-    precision_scope = nullcontext
-
-print(f"{time.time()-tic:.2f}s for loading model.")
-
-tic = time.time()
-
 #######################################
 # prompt token check
 
@@ -337,117 +364,183 @@ print(f"{time.time()-tic:.2f}s for loading tokenizer for validation.")
 # https://note.com/hugiri/n/n970f9deb55b2
 max_tokens = tokenizer.model_max_length
 
+def checkPrompt(caption,prompt):
+    tokens = tokenizer.tokenize(prompt)
+    tokensA = tokens[:max_tokens]
+    tokensB = tokens[max_tokens:]
+    tokenString = "⁞".join(map(lambda it:re.sub("</w>","",it),tokensA))
+    if tokensB:
+        tokenStringOverflow = "⁞".join(map(lambda it:re.sub("</w>","",it),tokensB))
+        tokenString =f"{tokenString}⁞<max_tokens>⁞{tokenStringOverflow}"
+
+    print(f"{caption}: {len(tokens)}/{max_tokens} tokens. weight={weights[i]}, prompt={tokenString}")
+    if not opt.allow_long_token and tokensB:
+        print(f"{caption}: Too long tokens.")
+        sys.exit(1)
+
 subprompts, weights = split_weighted_subprompts(promptText)
 for i,prompt in enumerate(subprompts):
-    tokens = tokenizer.tokenize(prompt)
-    tokenString = "⫶".join(map(lambda it:re.sub("</w>","",it),tokens))
-    print(f"prompt[{i}]: {len(tokens)}/{max_tokens} tokens. weight={weights[i]}, prompt={tokenString}")
-    if not opt.allow_long_token and len(tokens) > max_tokens :
-        print(f"prompt[{i}]: Too long tokens.")
-        sys.exit(1)
+    checkPrompt(f"prompt[{i}]",prompt)
+
+if opt.negative_prompt:
+    checkPrompt("negative_prompt",opt.negative_prompt)
 
 ######################################
 
+modelFS = instantiate_from_config(config.modelFirstStage)
+_, _ = modelFS.load_state_dict(sd, strict=False)
+modelFS.eval()
+del sd
+
+model_wrap = K.external.CompVisDenoiser(model)
+sampler = ksamplers[opt.sampler]
+
+is_half = False
+if opt.precision == "autocast":
+    is_half = True
+    model.half()
+    modelCS.half()
+
+if opt.precision == "autocast" :
+    precision_scope = autocast
+else:
+    precision_scope = nullcontext
+
+print(f"{time.time()-tic:.2f}s for loading model.")
+
+# create output dir
+outpath = opt.outdir
+os.makedirs(outpath, exist_ok=True)
+
+tic = time.time()
 with torch.no_grad():
     with precision_scope("cuda"):
-        modelCS.to(device)
-
-        tic = time.time()
-
-        uc = None
-        if opt.scale != 1.0:
-            uc = modelCS.get_learned_conditioning([""])
-
-        # normalize each "sub prompt" and add it
-        c = torch.zeros_like(uc)
-        totalWeight = sum(weights)
-        for i in range(len(subprompts)):
-            weight = weights[i]
-            # if not skip_normalize:
-            weight = weight / totalWeight
-            c = torch.add(c, modelCS.get_learned_conditioning(subprompts[i]), alpha=weight)
-
-        shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
-
-
-        print(f"{time.time() - tic:.2f}s for prompt conversion.")
-
-        free_vram("modelCS", lambda: modelCS.to("cpu"))
-
         for repeat_remain in reversed(range(opt.repeat)):
+            for negative_prompt_alpha in negative_prompt_alphas:
+                modelCS.to(device)
 
-            print("================================")
-            print(f"repeat {opt.repeat-repeat_remain}/{opt.repeat}")
+                tic = time.time()
 
-            if opt.cooldown > 0:
-                time.sleep(opt.cooldown)
+                # 素のuc。ゼロではない
+                uc_base = modelCS.get_learned_conditioning([""])
 
-            tic = time.time()
+                # 素のucとネガティブプロンプトを足し合わせる
+                uc = torch.zeros_like(modelCS.get_learned_conditioning([""]))
+                uc = torch.add(
+                    uc,
+                    uc_base,
+                    alpha= (1.0-negative_prompt_alpha)
+                )
+                uc = torch.add(
+                    uc,
+                    modelCS.get_learned_conditioning([opt.negative_prompt]),
+                    alpha=negative_prompt_alpha
+                )
 
-            model_wrap.to(device)
+                # normalize each "sub prompt" and add it
+                c = torch.zeros_like(modelCS.get_learned_conditioning([""]))
+                totalWeight = sum(weights)
+                for i in range(len(subprompts)):
+                    weight = weights[i]
+                    # if not skip_normalize:
+                    weight = weight / totalWeight
+                    c = torch.add(
+                        c, 
+                        modelCS.get_learned_conditioning(subprompts[i]), 
+                        alpha=weight
+                    )
 
-            sigmas = model_wrap.get_sigmas(opt.steps)
-            x = create_random_tensors(
-                shape, 
-                opt.seed, 
-                device=device,
-            ) * sigmas[0]
+                shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
 
-            extra_args = {
-                'cond': c, 
-                'uncond': uc, 
-                'cond_scale': opt.scale
-            }
+                print(f"{time.time() - tic:.2f}s for prompt conversion.")
 
-            samples = sampler(
-                CFGDenoiser(model_wrap),
-                x, 
-                sigmas, 
-                extra_args=extra_args, 
-                disable=False
-            )
+                free_vram("modelCS", lambda: modelCS.to("cpu"))
 
-            modelFS.to(device)
+                for scale in scales:
+                    for steps in steps_list:
+                        print("================================")
+                        print(f"repeat={opt.repeat-repeat_remain}/{opt.repeat}, scale={scale}, steps={steps}, negative_prompt_alpha={negative_prompt_alpha}")
 
-            x_samples_ddim = modelFS.decode_first_stage(samples[0].unsqueeze(0))
-            x_sample = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
-            x_sample = 255.0 * rearrange(x_sample[0].cpu().numpy(), "c h w -> h w c")
-            image = Image.fromarray(x_sample.astype(np.uint8))
+                        if opt.cooldown > 0:
+                            time.sleep(opt.cooldown)
 
-            print(f"{time.time()-tic:.2f}s to compute samples. shape={samples.shape}")
-            del samples
+                        tic = time.time()
 
-            time_str = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-            basename = os.path.join(outpath, f"{time_str}_{opt.seed}")
-            imageFile=f"{basename}.{opt.format}"
-            print(f"save to {imageFile}")
-            image.save(imageFile)
+                        model_wrap.to(device)
 
-            info = OrderedDict()
-            info['text'] = opt.prompt
-            info['width'] = image.width
-            info['height'] = image.height
-            info['precision'] = opt.precision
-            info['seed'] = opt.seed
-            info['steps'] = opt.steps
-            info['scale'] = opt.scale
-            info['C'] = opt.C
-            info['ckpt'] = os.path.basename(os.readlink( ckpt ))
-            info['sampler'] = opt.sampler
-            info_json = json.dumps(info, ensure_ascii=False)
-            f = codecs.open(f"{basename}_info.txt", 'w', 'utf-8')
-            f.write(info_json)
-            f.close()
+                        sigmas = model_wrap.get_sigmas(steps)
+                        x = create_random_tensors(
+                            shape, 
+                            opt.seed, 
+                            device=device,
+                        ) * sigmas[0]
 
-            free_vram("modelFS", lambda: modelFS.to("cpu"))
-            free_vram("model_wrap", lambda: model_wrap.to("cpu"))
-            # 不要ぽい free_vram("modelCS", lambda: modelCS.to("cpu"))
+                        extra_args = {
+                            'cond': c, 
+                            'uncond': uc, 
+                            'cond_scale': scale
+                        }
 
-            # リーク検出のため、1バイト単位で表示する
-            print(f"CUDA allocated={torch.cuda.memory_allocated():,} bytes")
+                        samples = sampler(
+                            CFGDenoiser(model_wrap),
+                            x, 
+                            sigmas, 
+                            extra_args=extra_args, 
+                            disable=False
+                        )
 
-            if is_fixed_seed and repeat_remain>0:
-                print( "repeat is ignored for fixed seed.")
-                break
+                        modelFS.to(device)
 
-            opt.seed = randint(1,2147483647)
+                        x_samples_ddim = modelFS.decode_first_stage(samples[0].unsqueeze(0))
+                        x_sample = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+                        x_sample = 255.0 * rearrange(x_sample[0].cpu().numpy(), "c h w -> h w c")
+                        image = Image.fromarray(x_sample.astype(np.uint8))
+
+                        print(f"{time.time()-tic:.2f}s to compute samples. shape={samples.shape}")
+                        del samples
+
+                        time_str = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+                        basename = os.path.join(outpath, f"{time_str}_{opt.seed}")
+                        if len(scales) > 1:
+                            basename = basename + f"_scale{scale}"
+                        if len(steps_list) > 1:
+                            basename = basename + f"_steps{steps}"
+                        if len(negative_prompt_alphas) > 1:
+                            basename = basename + f"_npa{negative_prompt_alpha}"
+
+                        imageFile=f"{basename}.{opt.format}"
+                        print(f"save to {imageFile}")
+                        image.save(imageFile)
+
+                        info = OrderedDict()
+                        info['prompt'] = opt.prompt
+                        if opt.negative_prompt:
+                            info['negative_prompt']=opt.negative_prompt
+                            info['negative_prompt_alpha']=negative_prompt_alpha
+
+                        info['ckpt'] = os.path.basename(os.readlink( ckpt ))
+                        info['width'] = image.width
+                        info['height'] = image.height
+                        info['seed'] = opt.seed
+                        info['sampler'] = opt.sampler
+                        info['steps'] = steps
+                        info['scale'] = scale
+                        info['precision'] = opt.precision
+                        info['C'] = opt.C
+                        comment = opt.comment.strip()
+                        if comment:
+                            info['comment'] = comment
+                        info_json = json.dumps(info, ensure_ascii=False)
+                        f = codecs.open(f"{basename}_info.txt", 'w', 'utf-8')
+                        f.write(info_json)
+                        f.close()
+
+                        free_vram("modelFS", lambda: modelFS.to("cpu"))
+                        free_vram("model_wrap", lambda: model_wrap.to("cpu"))
+                        # 不要ぽい free_vram("modelCS", lambda: modelCS.to("cpu"))
+
+                        # リーク検出のため、1バイト単位で表示する
+                        print(f"CUDA allocated={torch.cuda.memory_allocated():,} bytes")
+
+            if not is_fixed_seed:
+                opt.seed = randint(1,2147483647)

@@ -10,3 +10,5 @@ realesrgan.zip
 realesrgan/
 
 run.pl
+*.ttf
+/*.jpg
