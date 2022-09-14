@@ -412,33 +412,28 @@ print(f"{time.time()-tic:.2f}s for loading model.")
 outpath = opt.outdir
 os.makedirs(outpath, exist_ok=True)
 
-tic = time.time()
 with torch.no_grad():
     with precision_scope("cuda"):
         for repeat_remain in reversed(range(opt.repeat)):
             for negative_prompt_alpha in negative_prompt_alphas:
                 modelCS.to(device)
 
-                tic = time.time()
-
                 # 素のuc。ゼロではない
                 uc_base = modelCS.get_learned_conditioning([""])
 
                 # 素のucとネガティブプロンプトを足し合わせる
-                uc = torch.zeros_like(modelCS.get_learned_conditioning([""]))
                 uc = torch.add(
-                    uc,
-                    uc_base,
-                    alpha= (1.0-negative_prompt_alpha)
-                )
-                uc = torch.add(
-                    uc,
+                     torch.add(
+                        torch.zeros_like(uc_base),
+                        uc_base,
+                        alpha= (1.0-negative_prompt_alpha)
+                    ),
                     modelCS.get_learned_conditioning([opt.negative_prompt]),
                     alpha=negative_prompt_alpha
                 )
 
                 # normalize each "sub prompt" and add it
-                c = torch.zeros_like(modelCS.get_learned_conditioning([""]))
+                c = torch.zeros_like(uc_base)
                 totalWeight = sum(weights)
                 for i in range(len(subprompts)):
                     weight = weights[i]
@@ -452,14 +447,12 @@ with torch.no_grad():
 
                 shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
 
-                print(f"{time.time() - tic:.2f}s for prompt conversion.")
-
                 free_vram("modelCS", lambda: modelCS.to("cpu"))
 
                 for scale in scales:
                     for steps in steps_list:
                         print("================================")
-                        print(f"repeat={opt.repeat-repeat_remain}/{opt.repeat}, scale={scale}, steps={steps}, negative_prompt_alpha={negative_prompt_alpha}")
+                        print(f"repeat={opt.repeat-repeat_remain}/{opt.repeat}, scale={scale}, steps={steps}, npa={negative_prompt_alpha}")
 
                         if opt.cooldown > 0:
                             time.sleep(opt.cooldown)
