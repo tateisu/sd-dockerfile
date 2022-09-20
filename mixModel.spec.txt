@@ -1,0 +1,7 @@
+--outFile host/models/mixWd1.2x10+Sd1.4x1+Ta2.115000x1+Ld70kx1.ckpt
+
+// weight ckpt
+10 host/models/wd-v1-2-full-ema-pruned.ckpt
+1 host/models/sd-v1-4.ckpt
+1 host/models/trinart2_step115000.ckpt
+1 host/models/LD-70k-1e-pruned.ckpt

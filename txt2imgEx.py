@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import argparse, os, re, sys
 import torch
 import numpy as np
@@ -15,6 +17,7 @@ from contextlib import contextmanager, nullcontext
 from ldm.util import instantiate_from_config
 from optimUtils import split_weighted_subprompts, logger
 from transformers import logging, CLIPTokenizer
+from distutils.util import strtobool
 
 import pandas as pd
 import datetime
@@ -78,6 +81,130 @@ def create_random_tensors(shape, seed, device):
     x = torch.stack(xs, 0)
     return x
 
+
+class FrozenCLIPEmbedderWithCustomWords(torch.nn.Module):
+    def __init__(self, wrapped,enable_emphasis , hijack):
+        super().__init__()
+        self.wrapped = wrapped
+        self.hijack = hijack
+        self.tokenizer = wrapped.tokenizer
+        self.max_length = wrapped.max_length
+        self.enable_emphasis = enable_emphasis
+        self.token_mults = {}
+
+        tokens_with_parens = [(k, v) for k, v in self.tokenizer.get_vocab().items() if '(' in k or ')' in k or '[' in k or ']' in k]
+        for text, ident in tokens_with_parens:
+            mult = 1.0
+            for c in text:
+                if c == '[':
+                    mult /= 1.1
+                if c == ']':
+                    mult *= 1.1
+                if c == '(':
+                    mult *= 1.1
+                if c == ')':
+                    mult /= 1.1
+
+            if mult != 1.0:
+                self.token_mults[ident] = mult
+
+    def forward(self, text):
+        # self.hijack.fixes = []
+        # self.hijack.comments = []
+        remade_batch_tokens = []
+        id_start = self.wrapped.tokenizer.bos_token_id
+        id_end = self.wrapped.tokenizer.eos_token_id
+        maxlen = self.wrapped.max_length - 2
+        used_custom_terms = []
+
+        cache = {}
+        batch_tokens = self.wrapped.tokenizer(
+            text, 
+            truncation=False, 
+            add_special_tokens=False
+        )["input_ids"]
+        # pprint(batch_tokens)
+        if len(batch_tokens) > 0 and isinstance(batch_tokens[0],int):
+            batch_tokens= [batch_tokens]
+        batch_multipliers = []
+        for tokens in batch_tokens:
+            tuple_tokens = tuple(tokens)
+
+            if tuple_tokens in cache:
+                remade_tokens, fixes, multipliers = cache[tuple_tokens]
+            else:
+                fixes = []
+                remade_tokens = []
+                multipliers = []
+                mult = 1.0
+
+                i = 0
+                while i < len(tokens):
+                    token = tokens[i]
+
+                    possible_matches = [] # self.hijack.ids_lookup.get(token, None)
+
+                    mult_change = self.token_mults.get(token) if self.enable_emphasis else None
+                    if mult_change is not None:
+                        mult *= mult_change
+                    elif possible_matches is None:
+                        remade_tokens.append(token)
+                        multipliers.append(mult)
+                    else:
+                        found = False
+                        #for ids, word in possible_matches:
+                        #    if tokens[i:i+len(ids)] == ids:
+                        #        emb_len = int(self.hijack.word_embeddings[word].shape[0])
+                        #        fixes.append((len(remade_tokens), word))
+                        #        remade_tokens += [0] * emb_len
+                        #        multipliers += [mult] * emb_len
+                        #        i += len(ids) - 1
+                        #        found = True
+                        #        used_custom_terms.append((word, self.hijack.word_embeddings_checksums[word]))
+                        #        break
+
+                        if not found:
+                            remade_tokens.append(token)
+                            multipliers.append(mult)
+
+                    i += 1
+
+                if len(remade_tokens) > maxlen - 2:
+                    vocab = {v: k for k, v in self.wrapped.tokenizer.get_vocab().items()}
+                    ovf = remade_tokens[maxlen - 2:]
+                    overflowing_words = [vocab.get(int(x), "") for x in ovf]
+                    overflowing_text = self.wrapped.tokenizer.convert_tokens_to_string(''.join(overflowing_words))
+
+                    # self.hijack.comments.append(f"Warning: too many input tokens; some ({len(overflowing_words)}) have been truncated:\n{overflowing_text}\n")
+
+                remade_tokens = remade_tokens + [id_end] * (maxlen - 2 - len(remade_tokens))
+                remade_tokens = [id_start] + remade_tokens[0:maxlen-2] + [id_end]
+                cache[tuple_tokens] = (remade_tokens, fixes, multipliers)
+
+            multipliers = multipliers + [1.0] * (maxlen - 2 - len(multipliers))
+            multipliers = [1.0] + multipliers[0:maxlen - 2] + [1.0]
+
+            remade_batch_tokens.append(remade_tokens)
+            # self.hijack.fixes.append(fixes)
+            batch_multipliers.append(multipliers)
+
+        #if len(used_custom_terms) > 0:
+        #    self.hijack.comments.append("Used custom terms: " + ", ".join([f'{word} [{checksum}]' for word, checksum in used_custom_terms]))
+
+        tokens = torch.asarray(remade_batch_tokens).to(device)
+        outputs = self.wrapped.transformer(input_ids=tokens)
+        z = outputs.last_hidden_state
+
+        # restoring original mean is likely not correct, but it seems to work well to prevent artifacts that happen otherwise
+        batch_multipliers = torch.asarray(batch_multipliers).to(device)
+        original_mean = z.mean()
+        z *= batch_multipliers.reshape(batch_multipliers.shape + (1,)).expand(z.shape)
+        new_mean = z.mean()
+        z *= original_mean / new_mean
+
+        return z
+
+
 config = "host/v1-inference.yaml"
 ckpt = "models/ldm/stable-diffusion-v1/model.ckpt"
 
@@ -115,12 +242,12 @@ parser.add_argument(
     help="if enabled, uses the same starting code across samples",
 )
 
-parser.add_argument(
-    "--ddim_eta",
-    type=float,
-    default=0.0,
-    help="ddim eta (eta=0.0 corresponds to deterministic sampling",
-)
+#parser.add_argument(
+#    "--ddim_eta",
+#    type=float,
+#    default=0.0,
+#    help="ddim eta (eta=0.0 corresponds to deterministic sampling",
+#)
 
 parser.add_argument(
     "--H",
@@ -248,24 +375,34 @@ parser.add_argument(
 )
 
 ksamplers = {
-    'k_lms': K.sampling.sample_lms, 
-    'k_euler_a': K.sampling.sample_euler_ancestral, 
+    'k_lms': K.sampling.sample_lms,
+    'k_heun': K.sampling.sample_heun,
+    'k_euler': K.sampling.sample_euler,
+    'k_euler_a': K.sampling.sample_euler_ancestral,
+    'k_dpm_2': K.sampling.sample_dpm_2,
     'k_dpm_2_a': K.sampling.sample_dpm_2_ancestral,
 }
+
 parser.add_argument(
     "--sampler",
     type=str,
     help="sampler. one of k_euler_a, k_dpm_2_a, k_lms(default)",
-    choices=["k_euler_a", "k_dpm_2_a", "k_lms"],
+    choices=list(ksamplers.keys()),
     default="k_lms"
+)
+parser.add_argument(
+    "--enable-emphasis",
+    help="Use (text) to make model pay more attention to text text and [text] to make it pay less attention.",
+    default=True,
+    type=strtobool,
 )
 
 device = "cuda"
 
 opt = parser.parse_args()
 
-def splitCSV(a,typeConverter):
-    return list(
+def splitCSV(name,a,typeConverter):
+    cols = list(
         map(
             typeConverter,
             filter(
@@ -277,11 +414,15 @@ def splitCSV(a,typeConverter):
             ),
         )
     )
+    if len(cols) < 1:
+        print(f"required at least one '{name}'")
+        sys.exit(1)
+    return cols
 
 # multiple scales, steps
-scales = splitCSV(opt.scale, lambda x: float(x))
-steps_list = splitCSV(opt.steps, lambda x: int(x))
-negative_prompt_alphas = splitCSV(opt.negative_prompt_alpha, lambda x: float(x))
+scales = splitCSV("scale",opt.scale, lambda x: float(x))
+steps_list = splitCSV("steps",opt.steps, lambda x: int(x))
+negative_prompt_alphas = splitCSV("negative-prompt-alpha",opt.negative_prompt_alpha, lambda x: float(x))
 
 is_fixed_seed = (opt.seed is not None)
 if opt.repeat>1 and is_fixed_seed:
@@ -339,6 +480,11 @@ modelCS = instantiate_from_config(config.modelCondStage)
 _, _ = modelCS.load_state_dict(sd, strict=False)
 modelCS.eval()
 modelCS.cond_stage_model.device = device
+modelCS.cond_stage_model = FrozenCLIPEmbedderWithCustomWords(
+    modelCS.cond_stage_model,
+    opt.enable_emphasis,
+    None, # hijack #
+)
 
 #######################################
 # prompt token check
@@ -362,28 +508,30 @@ print(f"{time.time()-tic:.2f}s for loading tokenizer for validation.")
 
 # 上限は77だが、ギリギリに置いた単語の効果は出ないっぽい。
 # https://note.com/hugiri/n/n970f9deb55b2
-max_tokens = tokenizer.model_max_length
+max_tokens = tokenizer.model_max_length -2
 
-def checkPrompt(caption,prompt):
+CEND = '\33[0m'
+CRED = '\33[31m'
+def checkPrompt(caption,prompt,weight):
     tokens = tokenizer.tokenize(prompt)
     tokensA = tokens[:max_tokens]
     tokensB = tokens[max_tokens:]
     tokenString = "⁞".join(map(lambda it:re.sub("</w>","",it),tokensA))
     if tokensB:
         tokenStringOverflow = "⁞".join(map(lambda it:re.sub("</w>","",it),tokensB))
-        tokenString =f"{tokenString}⁞<max_tokens>⁞{tokenStringOverflow}"
+        tokenString =f"{tokenString}⁞{CRED}<max_tokens>{CEND}⁞{tokenStringOverflow}"
 
-    print(f"{caption}: {len(tokens)}/{max_tokens} tokens. weight={weights[i]}, prompt={tokenString}")
+    print(f"{caption}: {len(tokens)}/{max_tokens} tokens. weight={weight}, prompt={tokenString}")
     if not opt.allow_long_token and tokensB:
         print(f"{caption}: Too long tokens.")
         sys.exit(1)
 
 subprompts, weights = split_weighted_subprompts(promptText)
 for i,prompt in enumerate(subprompts):
-    checkPrompt(f"prompt[{i}]",prompt)
+    checkPrompt(f"prompt[{i}]",prompt,weights[i])
 
 if opt.negative_prompt:
-    checkPrompt("negative_prompt",opt.negative_prompt)
+    checkPrompt("negative_prompt",opt.negative_prompt,opt.negative_prompt_alpha)
 
 ######################################
 
