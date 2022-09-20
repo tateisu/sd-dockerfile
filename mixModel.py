@@ -6,13 +6,8 @@ from pprint import pprint
 
 specFile = sys.argv[1] if len(sys.argv)>1 else None
 
-if not specFile:
-    print(f"ERROR: missing arguments.")
-    print("usage: mixModel.py outFile specFile")
-    sys.exit(1)
-elif not os.path.isfile(specFile):
-    print(f"ERROR: missing specFile {specFile}")
-    print("usage: mixModel.py outFile specFile")
+if not specFile or not os.path.isfile(specFile):
+    print("usage: mixModel.py specFile")
     sys.exit(1)
 
 outFile = None
@@ -26,28 +21,30 @@ with open(specFile,encoding="utf-8") as f:
             break
         line = re.sub(r'[\x0d\x0a]+', '', line)
         line = re.sub(r'//.*', '', line)
+        line = re.sub(r'\s+$', '', line)
         if line == '':
             continue
 
-        m = re.search(r'^\s*--outFile(?:=|\s+)(\S+)', line)
+        m = re.search(r'^\s*--outFile(?:=|\s+)(.+)', line)
         if m:
             outFile = m.group(1)
             continue
 
-        m = re.search(r'^\s*([\d.]+)\s*(\S+)', line)
+        m = re.search(r'^\s*([\d.]+)\s*(.+)', line)
         if m:
             weight = float(m.group(1))
             inFile = m.group(2)
             if not os.path.isfile(inFile):
-                print(f"missing inFile {inFile}")
+                print(f"{specFile} {lno} : missing inFile {inFile}")
                 sys.exit(1)
             if weight < 0.01:
-                print(f"too small weight. {weight} must >= 0.01")
+                print(f"{specFile} {lno} : too small weight. {weight} must >= 0.01")
                 sys.exit(1)
             specs.append( [weight,inFile] )
             continue
 
         print(f"{specFile} {lno} : ?? {line}")
+        sys.exit(1)
 
 if not specs:
     print("empty merge specs.")
@@ -58,7 +55,7 @@ elif not outFile:
 
 keys = dict()
 for spec in specs:
-    print(f"load {spec[1]}…")
+    print(f"load {spec[1]} …")
     model = torch.load(spec[1])
     theta = model['state_dict']
     spec.append(model) # 2
