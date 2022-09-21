@@ -13,7 +13,7 @@ import _codecs
 
 def encode(*args):
     out = _codecs.encode(*args)
-    print(f'encode({args}) = {out}')
+    print(f"INFO: encode({args}) = {out}")
     return out
 
 class RestrictedUnpickler(pickle.Unpickler):
@@ -22,13 +22,17 @@ class RestrictedUnpickler(pickle.Unpickler):
         return torch.storage._TypedStorage()
 
     def find_class(self, module, name):
-        print(f'find class {module} {name}')
+        print(f"INFO: finding class {module} {name}")
         if module == 'collections' and name == 'OrderedDict':
             return getattr(collections, name)
         if module == 'torch._utils' and name == '_rebuild_tensor_v2':
             return torch._utils._rebuild_tensor_v2
         if module == 'torch' and name in ['FloatStorage', 'HalfStorage']:
             return torch.FloatStorage
+        if module == 'torch' and name in ['IntStorage']:
+            return torch.IntStorage
+        if module == 'torch' and name in ['LongStorage']:
+            return torch.LongStorage
         if module == 'numpy.core.multiarray' and name == 'scalar':
             return numpy.core.multiarray.scalar
         if module == 'numpy' and name == 'dtype':
@@ -36,35 +40,32 @@ class RestrictedUnpickler(pickle.Unpickler):
         if module == '_codecs' and name == 'encode':
             return encode
         # Forbid everything else.
-        raise pickle.UnpicklingError("global '%s/%s' is forbidden" % (module, name))
-
-def restricted_loads(s):
-    """Helper function analogous to pickle.loads()."""
-    return 
+        raise pickle.UnpicklingError(f"forbidden: module={module}, name={name}")
 
 # To test that it catches this RCE:
 # restricted_loads(b"cos\nsystem\n(S'echo hello world'\ntR.")
 
-def check(f):
+def check(f,inFile):
     bytes = f.read()
     d = RestrictedUnpickler(io.BytesIO(bytes)).load()
-    print(dir(d))
-    print(d.keys())
-    print(d['callbacks'])
+    print(f"INFO: {inFile} {dir(d)}")
+    print(f"INFO: {inFile} {d.keys()}")
+    print(f"INFO: {inFile} {d['callbacks']}")
 
-inFile = sys.argv[1] if len(sys.argv)>1 else None
-if inFile is None:
+files = sys.argv[1:]
+if not files:
     print(f"usage: {sys.argv[0]} <model.ckpt>")
     sys.exit(1)
 
-targetEntry = 'archive/data.pkl'
-
-# open model.ckpt as zip format
-with zipfile.ZipFile(inFile) as zf:
-
-    if targetEntry not in zf.namelist():
-        print(f"missing {targetEntry} in {inFile}")
-        sys.exit(1)
-
-    with zf.open(targetEntry) as f:
-        check(f)
+for inFile in files:
+    # open model.ckpt as zip format
+    with zipfile.ZipFile(inFile) as zf:
+        targetEntry = 'archive/data.pkl'
+        if targetEntry not in zf.namelist():
+            print(f"INFO: {inFile} has no {targetEntry}")
+            continue
+        try:
+            with zf.open(targetEntry) as f:
+                check(f,inFile)
+        except Exception as ex:
+            print(f"ERROR: {inFile} :{ex}")
