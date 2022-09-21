@@ -52,6 +52,7 @@ def check(f,inFile):
     print(f"INFO: {inFile} {d.keys()}")
     print(f"INFO: {inFile} {d['callbacks']}")
 
+## ./safe.py models/*.ckpt |grep -v INFO
 files = sys.argv[1:]
 if not files:
     print(f"usage: {sys.argv[0]} <model.ckpt>")
