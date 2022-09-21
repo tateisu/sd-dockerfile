@@ -11,7 +11,7 @@ use HTML::Entities;
 #########################
 
 # 無視するキーのハッシュ
-my %ignoreKey = map{($_,1)} qw( C precision negative_prompt_alpha );
+my %ignoreKeys = map{($_,1)} qw( C precision negative_prompt_alpha file );
 
 # 表示時にキー名部分を出力しないキーのハッシュ
 my %dontShowKeyName = map{($_,1)} qw( ckpt );
@@ -19,26 +19,62 @@ my %dontShowKeyName = map{($_,1)} qw( ckpt );
 # キーの登場順序を覚えておく
 my %keyOrder;
 my $keyOrderSeed = 0;
-$keyOrder{$_} = ++ $keyOrderSeed for qw(
-    ckpt
-    width
-    height
-    sampler
-    scale 
-    steps 
-    prompt
-    negative_prompt
+$keyOrder{$_} = ++ $keyOrderSeed for (
+    "ckpt",
+    "width",
+    "height",
+    "sampler",
+    "scale",
+    "steps",
+    "prompt",
+    "negative_prompt",
+    "Negative prompt",
+    "Steps",
+    "Sampler",
+    "CFG scale",
+    "Seed",
+    "Size",
+    "Denoising strength",
 );
+
+sub keyOrder($){
+    $keyOrder{ $_[0] } or die "missing keyOrder for $_[0]\n";
+}
 
 #########################
 
-# ファイルを読んで生データを返す
-sub loadFile($){
-    open(my $fh,"<:raw",$_[0]) or die "$_[0] $!";
+# ファイルを読んでデータを返す
+sub loadFile($;$){
+    my($fName,$layer)=@_;
+    $layer = "raw" if not $layer;
+    open(my $fh,"<:$layer",$fName) or die "$fName $!";
     local $/=undef;
     my $text = <$fh>;
-    close($fh) or die "$_[0] $!";
+    close($fh) or die "$fName $!";
     return $text;
+}
+
+sub decodeAutomatic1111Text($){
+    my @lines = split /\x0d?\x0a/, $_[0];
+    my $info = {};
+    my $lno=0;
+    for(@lines){
+        ++$lno;
+        if($lno==1){
+            $info->{prompt}=$_;
+            next;
+        }elsif( /^Negative prompt: (.*)/){
+            $info->{negative_prompt}=$1;
+            next;
+        }
+        for(split /, /,$_){
+            my($k,$v) = split /: /,$_;
+            if(defined $k and defined $v){
+                $info->{$k}=$v;
+            }
+        }
+    }
+    return $info;
 }
 
 # DATAを読んで grid を作る
@@ -47,6 +83,15 @@ my $curRow;
 sub addRow{
     $curRow = [];
     push @grid,$curRow;
+}
+sub addInfo{
+    my($item,$info)=@_;
+    while( my($k,$v)= each %$info ){
+        $item->{$k}=$v;
+        if(not defined $keyOrder{$k}){
+            $keyOrder{$k} = ++ $keyOrderSeed;
+        }
+    }
 }
 while(<DATA>){
     s|//.+||g;
@@ -65,12 +110,13 @@ while(<DATA>){
     $infoFile =~ s/\.png|\.x4-.+/_info.txt/;
     if( -f $infoFile){
         my $info = decode_json loadFile($infoFile);
-        while( my($k,$v)= each %$info ){
-            next if $ignoreKey{$k};
-            $item->{$k}=$v;
-            if(not defined $keyOrder{$k}){
-                $keyOrder{$k} = ++ $keyOrderSeed;
-            }
+        addInfo($item,$info);
+    }else{
+        $infoFile = $_;
+        $infoFile =~ s/\.png|\.x4-.+/.txt/;
+        if( -f $infoFile){
+            my $info = decodeAutomatic1111Text loadFile($infoFile,"utf8");
+            addInfo($item,$info);
         }
     }
 }
@@ -144,14 +190,18 @@ my $hasLeftHeader = max( map{ 0+keys(%$_)} @leftHeaders );
 # ヘッダの内容をHTMLのリストとして出力する
 sub listHeader{
     my($header,$title)=@_;
-    my @keys = sort keys %$header;
+
+    my @keys = sort { keyOrder($a) <=> keyOrder($b) } 
+        grep{!$ignoreKeys{$_}} 
+        keys %$header;
+
     return if not @keys;
 
     if($title){
         say qq(<H3>),encode_entities($title),qq(</H3>);
     }
     say qq(<ul>);
-    for my $key (sort {$keyOrder{$a}<=>$keyOrder{$b} }keys %$header){
+    for my $key ( @keys ){
         say qq(<li>);
         if($dontShowKeyName{$key}){
             say encode_entities($header->{$key});
@@ -233,10 +283,17 @@ END
 
 __DATA__
 
-outputs/20220918232517_366227307.x4-standard-scale-4_00x.jpg
-outputs/20220919212350_366227307.png
-outputs/20220919212501_366227307.png
-ROW
-outputs/20220918232142_304018080.x4-standard-scale-4_00x.jpg
-outputs/20220919212819_304018080.png
-outputs/20220919212641_304018080.png
+outputs/20220920231656_1535587772.png
+outputs/20220920232008_2480661817.png
+outputs/20220920232313_1730805163.png
+outputs/20220920232618_1730805164.png
+
+outputs/20220920232923_1730805165.png
+outputs/20220920233227_1730805166.png
+outputs/20220920233523_1730805167.png
+outputs/20220920233818_1730805168.png
+
+outputs/20220920234114_1730805169.png
+outputs/20220920234409_1730805170.png
+outputs/20220920234705_1730805171.png
+outputs/20220920235001_1730805172.png
